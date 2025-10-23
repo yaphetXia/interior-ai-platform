@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -234,10 +235,16 @@ export default function WorkspacePage() {
       })
 
       clearInterval(progressInterval)
-      setProgress(100)
+
+      // 使用 flushSync 强制同步更新，避免并发渲染冲突
+      flushSync(() => {
+        setProgress(100)
+      })
 
       // 显示生成结果
-      setGeneratedImages(result.images || [])
+      flushSync(() => {
+        setGeneratedImages(result.images || [])
+      })
 
     } catch (error) {
       console.error('生成失败:', error)
@@ -429,6 +436,7 @@ export default function WorkspacePage() {
                       </p>
                     </div>
                     <MaskEditor
+                      key={uploadedImages[selectedImageIndex]?.id}
                       imageUrl={uploadedImages[selectedImageIndex]?.url}
                       onMaskChange={setMaskData}
                     />
@@ -548,7 +556,7 @@ export default function WorkspacePage() {
                     <h3 className="text-lg font-semibold mb-4">生成结果</h3>
                     <div className="space-y-4">
                       {generatedImages.map((img, index) => (
-                        <div key={index} className="space-y-3">
+                        <div key={img.url || `generated-${index}`} className="space-y-3">
                           <div className="rounded-lg overflow-hidden bg-muted/30">
                             <img
                               src={img.url}

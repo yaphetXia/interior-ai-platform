@@ -34,6 +34,13 @@ export default function MaskEditor({ imageUrl, onMaskChange }) {
       setImage(img)
     }
     img.src = imageUrl
+
+    // 清理函数：确保在组件卸载时清理 Canvas
+    return () => {
+      if (canvas && ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+      }
+    }
   }, [imageUrl])
 
   // 获取鼠标/触摸位置
