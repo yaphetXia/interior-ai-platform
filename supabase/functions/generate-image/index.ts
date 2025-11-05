@@ -78,6 +78,12 @@ serve(async (req) => {
       }
     }
 
+    console.info('Edge Function 接收到的提示词', {
+      preset,
+      length: prompt.length,
+      prompt
+    })
+
     console.log('生成图像请求:', {
       userId: user.id,
       promptLength: prompt.length,
@@ -200,6 +206,12 @@ serve(async (req) => {
       console.log('直接使用用户提示词')
     }
 
+    console.info('Edge Function 处理后的核心提示词', {
+      preset,
+      length: finalPrompt.length,
+      prompt: finalPrompt
+    })
+
     // 5. 调用星空API图像生成 (OpenAI兼容格式)
     console.log('调用星空API图像生成...', apiEndpoint, 'Model:', imageModel)
     console.log('最终提示词长度:', finalPrompt.length, '字符')
@@ -231,6 +243,12 @@ serve(async (req) => {
       textPrompt += `\n\nIMPORTANT INSTRUCTION: The image provided contains semi-transparent RED OVERLAY markings. These red areas indicate the EXACT regions that need to be modified according to the user's request. Please generate a NEW IMAGE where ONLY the content within the red-marked areas is modified, while keeping all other parts of the image completely unchanged. The red overlay itself should NOT appear in the final generated image - it is only a visual guide showing which areas to modify.`
       console.log('已添加遮罩使用说明到提示词')
     }
+
+    console.info('Edge Function 即将发送到图像模型的提示词', {
+      preset,
+      length: textPrompt.length,
+      prompt: textPrompt
+    })
 
     messageContent.push({
       type: "text",

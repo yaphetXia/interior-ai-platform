@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -46,10 +46,54 @@ export default function WorkspacePage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [generatedImages, setGeneratedImages] = useState([])
+  const progressTimerRef = useRef(null)
+
+  const startProgress = useCallback(() => {
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current)
+    }
+
+    const startTime = Date.now()
+    setProgress(5)
+
+    progressTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime
+      const curveValue = 5 + (1 - Math.exp(-elapsed / 6000)) * 92 // 快速起步，后期放缓
+
+      setProgress(prev => {
+        const next = Math.min(95, Math.round(curveValue))
+        return next > prev ? next : prev
+      })
+    }, 320)
+  }, [])
+
+  const stopProgress = useCallback((finalValue) => {
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current)
+      progressTimerRef.current = null
+    }
+
+    if (typeof finalValue === 'number') {
+      setProgress(finalValue)
+    }
+  }, [])
+
+  // 清除非局部模式下的遮罩数据，避免其他功能误用
+  useEffect(() => {
+    if (selectedPreset !== 'local') {
+      setMaskData(null)
+    }
+  }, [selectedPreset])
+
+  useEffect(() => {
+    return () => {
+      stopProgress()
+    }
+  }, [stopProgress])
 
   const presets = [
     { id: 'general', name: '通用生成', icon: <Sparkles className="w-4 h-4" />, description: '从文字描述生成高质量效果图', disabled: false, maxImages: 1 },
-    { id: 'furniture', name: '家具替换', icon: <ImageIcon className="w-4 h-4" />, needsMask: true, description: '智能识别并替换家具，保持光影效果', disabled: false, maxImages: 2 },
+    { id: 'furniture', name: '家具替换', icon: <ImageIcon className="w-4 h-4" />, needsMask: false, description: '智能识别并替换家具，保持光影效果', disabled: false, maxImages: 2 },
     { id: 'white_model', name: '白膜出图', icon: <Zap className="w-4 h-4" />, description: '3D白模快速生成真实材质渲染图', disabled: false, maxImages: 10 },
     { id: 'sketch', name: '质感提升', icon: <ImageIcon className="w-4 h-4" />, description: '提升图像材质质感，增强真实感和细节表现', disabled: false, maxImages: 10 },
     { id: 'layout', name: '排版转效果图', icon: <ImageIcon className="w-4 h-4" />, description: '平面布局图生成3D效果图', disabled: false, maxImages: 10 },
@@ -57,6 +101,8 @@ export default function WorkspacePage() {
   ]
 
   const currentPreset = presets.find(p => p.id === selectedPreset)
+  const currentImage = uploadedImages[selectedImageIndex] || null
+  const maskEditorKey = currentImage?.id ?? 'mask-editor-empty'
 
   // 处理多图上传
   const handleImagesUpload = (e) => {
@@ -126,13 +172,9 @@ export default function WorkspacePage() {
 
     setIsGenerating(true)
     setProgress(0)
+    startProgress()
 
     try {
-      // 模拟进度
-      const progressInterval = setInterval(() => {
-        setProgress(prev => Math.min(prev + 5, 90))
-      }, 500)
-
       // 处理提示词 - 根据预设使用不同的框架
       let finalPrompt = description
 
@@ -213,6 +255,15 @@ export default function WorkspacePage() {
         }
       }
 
+      console.info(
+        '[Workspace] 最终提示词',
+        {
+          preset: selectedPreset,
+          length: finalPrompt.length,
+          prompt: finalPrompt
+        }
+      )
+
       // 构建图片列表（支持多图输入）
       const imageList = uploadedImages.length > 0
         ? uploadedImages.map(img => img.url)
@@ -234,7 +285,7 @@ export default function WorkspacePage() {
         numImages: 1
       })
 
-      clearInterval(progressInterval)
+      stopProgress(100)
 
       // 使用 flushSync 强制同步更新，避免并发渲染冲突
       flushSync(() => {
@@ -247,9 +298,11 @@ export default function WorkspacePage() {
       })
 
     } catch (error) {
+      stopProgress(0)
       console.error('生成失败:', error)
       alert('生成失败: ' + error.message)
     } finally {
+      stopProgress()
       setTimeout(() => {
         setIsGenerating(false)
         setProgress(0)
@@ -423,7 +476,7 @@ export default function WorkspacePage() {
                 </div>
 
                 {/* 遮罩编辑器 */}
-                {true && currentPreset?.needsMask && uploadedImages.length > 0 && (
+                {selectedPreset === 'local' && (
                   <div className="bg-card rounded-xl p-6 border">
                     <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
                       <Layers className="w-5 h-5 text-primary" />
@@ -436,8 +489,8 @@ export default function WorkspacePage() {
                       </p>
                     </div>
                     <MaskEditor
-                      key={uploadedImages[selectedImageIndex]?.id}
-                      imageUrl={uploadedImages[selectedImageIndex]?.url}
+                      key={maskEditorKey}
+                      imageUrl={currentImage?.url}
                       onMaskChange={setMaskData}
                     />
                   </div>
@@ -602,4 +655,3 @@ export default function WorkspacePage() {
     </div>
   )
 }
-

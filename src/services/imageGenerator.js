@@ -57,7 +57,9 @@ export async function generateImage(params) {
     const edgeFunctionUrl = getEdgeFunctionEndpoint()
     const config = getConfig()
 
-    const response = await fetch(edgeFunctionUrl, {
+    const timeout = Number(config.timeout) || 0
+    let timeoutWarningTimer = null
+    const fetchOptions = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -73,9 +75,24 @@ export async function generateImage(params) {
         height,
         numImages,
         metaPrompt  // 传递 meta-prompt 给 Edge Function
-      }),
-      signal: AbortSignal.timeout(config.timeout)
-    })
+      })
+    }
+
+    if (timeout > 0) {
+      console.info('[generateImage] 请求超时阈值(毫秒):', timeout)
+      timeoutWarningTimer = setTimeout(() => {
+        console.warn('[generateImage] 请求仍在进行中，已超过设定阈值。等待 Edge Function 返回结果...')
+      }, timeout)
+    }
+
+    let response
+    try {
+      response = await fetch(edgeFunctionUrl, fetchOptions)
+    } finally {
+      if (timeoutWarningTimer) {
+        clearTimeout(timeoutWarningTimer)
+      }
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
@@ -112,4 +129,3 @@ export async function batchGenerateImages(requests) {
 
   return results
 }
-

@@ -24,7 +24,7 @@ const CONFIG = {
   },
 
   // API超时配置
-  timeout: parseInt(import.meta.env.VITE_API_TIMEOUT || '120000'),
+  timeout: parseInt(import.meta.env.VITE_API_TIMEOUT || '240000'),
 
   // 最大生成图片数量
   maxImagesPerGeneration: parseInt(import.meta.env.VITE_MAX_IMAGES_PER_GENERATION || '4'),
@@ -82,4 +82,3 @@ export function validateConfig() {
     errors,
   }
 }
-
