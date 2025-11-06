@@ -29,7 +29,8 @@ export async function generateImage(params) {
     width = 1024,
     height = 1024,
     numImages = 1,
-    metaPrompt = null
+    metaPrompt = null,
+    userPrompt = null
   } = params
 
   try {
@@ -44,7 +45,8 @@ export async function generateImage(params) {
       width,
       height,
       numImages,
-      hasMetaPrompt: !!metaPrompt
+      hasMetaPrompt: !!metaPrompt,
+      hasUserPrompt: !!userPrompt
     })
 
     // 获取当前用户的访问令牌
@@ -74,7 +76,8 @@ export async function generateImage(params) {
         width,
         height,
         numImages,
-        metaPrompt  // 传递 meta-prompt 给 Edge Function
+        metaPrompt,  // 传递 meta-prompt 给 Edge Function
+        userPrompt   // 单独传递用户原始提示词用于历史记录展示
       })
     }
 

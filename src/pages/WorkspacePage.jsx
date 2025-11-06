@@ -159,6 +159,8 @@ export default function WorkspacePage() {
       return
     }
 
+    const userPrompt = description.trim()
+
     if (uploadedImages.length === 0 && selectedPreset !== 'general') {
       alert('请先上传图片')
       return
@@ -282,7 +284,8 @@ export default function WorkspacePage() {
         mask: maskData,
         width: 1024,
         height: 1024,
-        numImages: 1
+        numImages: 1,
+        userPrompt
       })
 
       stopProgress(100)

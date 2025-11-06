@@ -18,6 +18,80 @@ interface GenerateImageRequest {
   width?: number
   height?: number
   numImages?: number
+  userPrompt?: string | null    // 用户原始提示词，仅用于历史记录展示
+}
+
+interface ExtractedImage {
+  data: string
+  mimeType: string
+}
+
+function extractBase64Images(content: unknown): ExtractedImage[] {
+  const results: ExtractedImage[] = []
+
+  const addFromText = (text: string) => {
+    const regex = /data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)/g
+    let match: RegExpExecArray | null
+    while ((match = regex.exec(text)) !== null) {
+      const format = match[1].toLowerCase()
+      const mimeType = format === 'jpg' ? 'image/jpeg' : `image/${format}`
+      const data = match[2].replace(/\s/g, '')
+      results.push({ data, mimeType })
+    }
+  }
+
+  const addFromBase64Field = (base64: string, mimeType?: string) => {
+    if (!base64) return
+    results.push({
+      data: base64.replace(/\s/g, ''),
+      mimeType: mimeType && mimeType.startsWith('image/')
+        ? mimeType
+        : 'image/png'
+    })
+  }
+
+  const walk = (node: unknown): void => {
+    if (!node) return
+    if (typeof node === 'string') {
+      addFromText(node)
+      return
+    }
+
+    if (Array.isArray(node)) {
+      node.forEach(walk)
+      return
+    }
+
+    if (typeof node === 'object') {
+      const record = node as Record<string, unknown>
+
+      if (typeof record.text === 'string') {
+        addFromText(record.text)
+      }
+
+      if (typeof record.content !== 'undefined') {
+        walk(record.content)
+      }
+
+      if (typeof record.image_base64 === 'string') {
+        addFromBase64Field(record.image_base64, typeof record.mime_type === 'string' ? record.mime_type : undefined)
+      }
+
+      if (typeof record.b64_json === 'string') {
+        addFromBase64Field(record.b64_json, typeof record.mime_type === 'string' ? record.mime_type : undefined)
+      }
+
+      if (record.type === 'image_url' && typeof record.image_url === 'object' && record.image_url !== null) {
+        const imageUrlObj = record.image_url as Record<string, unknown>
+        if (typeof imageUrlObj.url === 'string' && imageUrlObj.url.startsWith('data:image/')) {
+          addFromText(imageUrlObj.url)
+        }
+      }
+    }
+  }
+
+  walk(content)
+  return results
 }
 
 serve(async (req) => {
@@ -56,7 +130,8 @@ serve(async (req) => {
       mask = null,
       width = 1024,
       height = 1024,
-      numImages = 1
+      numImages = 1,
+      userPrompt = null
     } = requestData
 
     if (!prompt) {
@@ -309,63 +384,59 @@ serve(async (req) => {
         continue
       }
 
-      try {
-        // 从Markdown格式中提取base64数据
-        // 格式: ![image](data:image/png;base64,<base64数据>)
-        const base64Match = content.match(/data:image\/(png|jpeg|jpg);base64,([^)]+)/)
+      const extractedImages = extractBase64Images(content)
 
-        if (!base64Match) {
-          console.warn(`候选结果 ${i} 不包含有效的base64图像数据`)
-          continue
+      if (extractedImages.length === 0) {
+        console.warn(`候选结果 ${i} 未提取到任何 base64 图像数据`, { contentType: typeof content })
+        continue
+      }
+
+      for (let k = 0; k < extractedImages.length; k++) {
+        const { data: base64Data, mimeType } = extractedImages[k]
+
+        try {
+          console.log(`处理图片 ${i + 1}/${choices.length} (变体 ${k + 1}/${extractedImages.length}), MIME type: ${mimeType}`)
+
+          const cleanedBase64 = base64Data.replace(/\s/g, '')
+          const binaryString = atob(cleanedBase64)
+          const bytes = new Uint8Array(binaryString.length)
+          for (let j = 0; j < binaryString.length; j++) {
+            bytes[j] = binaryString.charCodeAt(j)
+          }
+          const imageBlob = bytes.buffer
+
+          // 生成唯一文件名
+          const timestamp = Date.now()
+          const randomId = Math.random().toString(36).substring(7)
+          const extension = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1] || 'png'
+          const filename = `${user.id}/${timestamp}_${randomId}_${i}_${k}.${extension}`
+          const storagePath = filename
+
+          console.log('上传到 Supabase Storage:', storagePath)
+
+          const { error: uploadError } = await supabase.storage
+            .from('generated-images')
+            .upload(storagePath, imageBlob, {
+              contentType: mimeType,
+              upsert: false,
+            })
+
+          if (uploadError) {
+            console.error('上传失败:', uploadError)
+            throw new Error(`图片上传失败: ${uploadError.message}`)
+          }
+
+          const { data: urlData } = supabase.storage
+            .from('generated-images')
+            .getPublicUrl(storagePath)
+
+          imageUrls.push(urlData.publicUrl)
+          storagePaths.push(storagePath)
+
+          console.log('图片上传成功:', urlData.publicUrl)
+        } catch (error) {
+          console.error(`处理图片 ${i} 变体 ${k} 时出错:`, error)
         }
-
-        const mimeType = base64Match[1] === 'png' ? 'image/png' : 'image/jpeg'
-        const base64Data = base64Match[2]
-
-        console.log(`处理图片 ${i + 1}/${choices.length}, MIME type: ${mimeType}`)
-
-        // 将 base64 转换为 ArrayBuffer
-        // Deno 环境中使用 atob 解码 base64
-        const binaryString = atob(base64Data)
-        const bytes = new Uint8Array(binaryString.length)
-        for (let j = 0; j < binaryString.length; j++) {
-          bytes[j] = binaryString.charCodeAt(j)
-        }
-        const imageBlob = bytes.buffer
-
-        // 生成唯一文件名
-        const timestamp = Date.now()
-        const randomId = Math.random().toString(36).substring(7)
-        const filename = `${user.id}/${timestamp}_${randomId}_${i}.png`
-        const storagePath = filename
-
-        console.log('上传到 Supabase Storage:', storagePath)
-
-        // 上传到 Supabase Storage
-        const { error: uploadError } = await supabase.storage
-          .from('generated-images')
-          .upload(storagePath, imageBlob, {
-            contentType: 'image/png',
-            upsert: false,
-          })
-
-        if (uploadError) {
-          console.error('上传失败:', uploadError)
-          throw new Error(`图片上传失败: ${uploadError.message}`)
-        }
-
-        // 获取公共 URL
-        const { data: urlData } = supabase.storage
-          .from('generated-images')
-          .getPublicUrl(storagePath)
-
-        imageUrls.push(urlData.publicUrl)
-        storagePaths.push(storagePath)
-
-        console.log('图片上传成功:', urlData.publicUrl)
-      } catch (error) {
-        console.error(`处理图片 ${i} 时出错:`, error)
-        // 如果单张图片失败，继续处理其他图片
       }
     }
 
@@ -374,11 +445,13 @@ serve(async (req) => {
     }
 
     // 6. 保存生成记录到数据库
+    const displayPrompt = userPrompt?.trim() || prompt
+
     const { error: insertError } = await supabase
       .from('generation_history')
       .insert({
         user_id: user.id,
-        prompt: prompt,
+        prompt: displayPrompt,
         preset: preset,
         image_urls: imageUrls,
         storage_paths: storagePaths,
@@ -397,7 +470,7 @@ serve(async (req) => {
           url,
           storagePath: storagePaths[idx],
         })),
-        prompt,
+        prompt: displayPrompt,
         preset,
       }),
       {
