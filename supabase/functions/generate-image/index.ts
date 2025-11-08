@@ -22,21 +22,76 @@ interface GenerateImageRequest {
 }
 
 interface ExtractedImage {
-  data: string
+  data: string | null
   mimeType: string
+  remoteUrl?: string
+}
+
+interface InlineData {
+  mimeType: string
+  data: string
 }
 
 function extractBase64Images(content: unknown): ExtractedImage[] {
   const results: ExtractedImage[] = []
 
+  const tryParseJsonString = (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const firstChar = trimmed[0]
+    const lastChar = trimmed[trimmed.length - 1]
+    if (!((firstChar === '{' && lastChar === '}') || (firstChar === '[' && lastChar === ']'))) {
+      return
+    }
+    try {
+      const parsed = JSON.parse(trimmed)
+      walk(parsed)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn('尝试解析模型返回字符串为 JSON 失败，忽略该内容', message)
+    }
+  }
+
   const addFromText = (text: string) => {
     const regex = /data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)/g
     let match: RegExpExecArray | null
+    let found = false
     while ((match = regex.exec(text)) !== null) {
       const format = match[1].toLowerCase()
       const mimeType = format === 'jpg' ? 'image/jpeg' : `image/${format}`
       const data = match[2].replace(/\s/g, '')
       results.push({ data, mimeType })
+      found = true
+    }
+
+    if (!found) {
+      const markdownImgRegex = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/g
+      let mdMatch: RegExpExecArray | null
+      while ((mdMatch = markdownImgRegex.exec(text)) !== null) {
+        results.push({
+          data: null,
+          mimeType: 'image/png',
+          remoteUrl: mdMatch[1]
+        })
+        found = true
+      }
+    }
+
+    if (!found) {
+      const rawUrlRegex = /(https?:\/\/[^\s)]+)/gi
+      let urlMatch: RegExpExecArray | null
+      while ((urlMatch = rawUrlRegex.exec(text)) !== null) {
+        results.push({
+          data: null,
+          mimeType: 'image/png',
+          remoteUrl: urlMatch[1]
+        })
+        found = true
+      }
+    }
+
+    if (!found) {
+      tryParseJsonString(text)
     }
   }
 
@@ -83,15 +138,167 @@ function extractBase64Images(content: unknown): ExtractedImage[] {
 
       if (record.type === 'image_url' && typeof record.image_url === 'object' && record.image_url !== null) {
         const imageUrlObj = record.image_url as Record<string, unknown>
-        if (typeof imageUrlObj.url === 'string' && imageUrlObj.url.startsWith('data:image/')) {
-          addFromText(imageUrlObj.url)
+        if (typeof imageUrlObj.url === 'string') {
+          if (imageUrlObj.url.startsWith('data:image/')) {
+            addFromText(imageUrlObj.url)
+          } else if (imageUrlObj.url.startsWith('http')) {
+            results.push({
+              data: null,
+              mimeType: typeof record.mime_type === 'string' ? record.mime_type : 'image/png',
+              remoteUrl: imageUrlObj.url
+            })
+          }
         }
+      }
+
+      if (typeof record.url === 'string' && record.url.startsWith('http')) {
+        results.push({
+          data: null,
+          mimeType: typeof record.mime_type === 'string' ? record.mime_type : 'image/png',
+          remoteUrl: record.url
+        })
       }
     }
   }
 
   walk(content)
   return results
+}
+
+async function convertImageToInlineData(image: string): Promise<InlineData | null> {
+  if (!image) return null
+
+  if (image.startsWith('data:image/')) {
+    const match = image.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/)
+    if (match) {
+      return {
+        mimeType: match[1],
+        data: match[2]
+      }
+    }
+  }
+
+  try {
+    const resp = await fetch(image)
+    if (!resp.ok) {
+      console.warn('下载输入图片失败:', image, resp.status, resp.statusText)
+      return null
+    }
+    const mimeType = resp.headers.get('content-type') || 'image/png'
+    const buffer = await resp.arrayBuffer()
+    return {
+      mimeType,
+      data: arrayBufferToBase64(buffer)
+    }
+  } catch (error) {
+    console.warn('下载输入图片异常:', image, error)
+    return null
+  }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  return btoa(binary)
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64)
+  const bytes = new Uint8Array(binaryString.length)
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i)
+  }
+  return bytes
+}
+
+async function generateWithGeminiNative(params: {
+  prompt: string
+  imageList: string[]
+  model: string
+  mask?: string | null
+}) {
+  const geminiApiKey = Deno.env.get('GEMINI_API_KEY') ?? Deno.env.get('VITE_GEMINI_API_KEY') ?? ''
+  if (!geminiApiKey) {
+    console.warn('Gemini API Key 未配置，无法调用原生接口')
+    return []
+  }
+
+  const geminiEndpoint = Deno.env.get('GEMINI_API_ENDPOINT') ?? 'https://generativelanguage.googleapis.com/v1beta'
+  const url = `${geminiEndpoint}/models/${params.model}:generateContent?key=${geminiApiKey}`
+
+  const parts: any[] = []
+
+  for (const img of params.imageList || []) {
+    const inlineData = await convertImageToInlineData(img)
+    if (inlineData) {
+      parts.push({ inlineData })
+    }
+  }
+
+  parts.push({ text: params.prompt })
+
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts
+      }
+    ],
+    generationConfig: {
+      temperature: 0.9,
+      topP: 0.95
+    }
+  }
+
+  console.log('调用 Gemini 原生接口生成图像...')
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
+
+  const data = await response.json()
+
+  if (!response.ok) {
+    console.error('Gemini 原生接口错误:', JSON.stringify(data).slice(0, 500))
+    return []
+  }
+
+  const candidates = Array.isArray(data.candidates) ? data.candidates : []
+  const extracted: ExtractedImage[] = []
+
+  for (const candidate of candidates) {
+    const parts = candidate?.content?.parts || candidate?.parts || []
+    for (const part of parts) {
+      if (part?.inlineData?.data) {
+        extracted.push({
+          data: part.inlineData.data,
+          mimeType: part.inlineData.mimeType || 'image/png'
+        })
+      } else if (part?.media?.url) {
+        extracted.push({
+          data: null,
+          mimeType: part.media.mimeType || 'image/png',
+          remoteUrl: part.media.url
+        })
+      } else if (part?.fileData?.fileUri) {
+        extracted.push({
+          data: null,
+          mimeType: part.fileData.mimeType || 'image/png',
+          remoteUrl: part.fileData.fileUri
+        })
+      }
+    }
+  }
+
+  console.log(`Gemini 原生接口返回 ${extracted.length} 张图片数据`)
+  return extracted
 }
 
 serve(async (req) => {
@@ -364,20 +571,29 @@ serve(async (req) => {
     // 4. 处理生成的图片
     // 星空API返回格式: { choices: [{ message: { content: "![image](data:image/png;base64,...)" } }] }
     const choices = apiData.choices || []
+    const dataArray = Array.isArray(apiData.data) ? apiData.data : []
+    const aggregatedResults = choices.length > 0 ? choices : dataArray
 
-    if (choices.length === 0) {
-      throw new Error('API 未返回图片')
+    if (aggregatedResults.length === 0) {
+      console.error('星空API原始响应:', JSON.stringify(apiData).slice(0, 500))
+      throw new Error('API 未返回图片或相关数据')
     }
 
-    console.log(`准备处理 ${choices.length} 个候选结果`)
+    console.log(`准备处理 ${aggregatedResults.length} 个候选结果`)
 
     // 5. 提取 base64 图片数据并上传到 Supabase Storage
     const imageUrls: string[] = []
     const storagePaths: string[] = []
 
-    for (let i = 0; i < choices.length; i++) {
-      const choice = choices[i]
-      const content = choice.message?.content
+    for (let i = 0; i < aggregatedResults.length; i++) {
+      const choice = aggregatedResults[i] as any
+      const content =
+        choice?.message?.content ??
+        choice?.content ??
+        choice?.url ??
+        choice?.b64_json ??
+        choice?.data ??
+        choice
 
       if (!content) {
         console.warn(`候选结果 ${i} 不包含内容`)
@@ -387,23 +603,38 @@ serve(async (req) => {
       const extractedImages = extractBase64Images(content)
 
       if (extractedImages.length === 0) {
-        console.warn(`候选结果 ${i} 未提取到任何 base64 图像数据`, { contentType: typeof content })
+        const preview = typeof content === 'string'
+          ? content.slice(0, 300)
+          : JSON.stringify(content)?.slice(0, 300)
+        console.warn(`候选结果 ${i} 未提取到任何图像数据`, {
+          contentType: typeof content,
+          preview
+        })
         continue
       }
 
       for (let k = 0; k < extractedImages.length; k++) {
-        const { data: base64Data, mimeType } = extractedImages[k]
+        const { data: base64Data, mimeType, remoteUrl } = extractedImages[k]
 
         try {
-          console.log(`处理图片 ${i + 1}/${choices.length} (变体 ${k + 1}/${extractedImages.length}), MIME type: ${mimeType}`)
+          console.log(`处理图片 ${i + 1}/${aggregatedResults.length} (变体 ${k + 1}/${extractedImages.length}), MIME type: ${mimeType}`)
+          let imageBlob: ArrayBuffer
 
-          const cleanedBase64 = base64Data.replace(/\s/g, '')
-          const binaryString = atob(cleanedBase64)
-          const bytes = new Uint8Array(binaryString.length)
-          for (let j = 0; j < binaryString.length; j++) {
-            bytes[j] = binaryString.charCodeAt(j)
+          if (base64Data) {
+            const cleanedBase64 = base64Data.replace(/\s/g, '')
+            const bytes = base64ToUint8Array(cleanedBase64)
+            imageBlob = bytes.buffer
+          } else if (remoteUrl) {
+            console.log('检测到远程图片URL，尝试下载后再上传:', remoteUrl)
+            const remoteResp = await fetch(remoteUrl)
+            if (!remoteResp.ok) {
+              throw new Error(`下载远程图片失败: ${remoteResp.status} ${remoteResp.statusText}`)
+            }
+            const arrayBuffer = await remoteResp.arrayBuffer()
+            imageBlob = arrayBuffer
+          } else {
+            throw new Error('既没有base64数据也没有远程URL，跳过该图片')
           }
-          const imageBlob = bytes.buffer
 
           // 生成唯一文件名
           const timestamp = Date.now()
@@ -436,6 +667,64 @@ serve(async (req) => {
           console.log('图片上传成功:', urlData.publicUrl)
         } catch (error) {
           console.error(`处理图片 ${i} 变体 ${k} 时出错:`, error)
+        }
+      }
+    }
+
+    if (imageUrls.length === 0) {
+      console.warn('星空API未返回任何可用图片，尝试直接调用 Gemini 原生接口')
+      const geminiImages = await generateWithGeminiNative({
+        prompt: textPrompt,
+        imageList,
+        model: imageModel,
+        mask
+      })
+
+      for (let idx = 0; idx < geminiImages.length; idx++) {
+        const { data: base64Data, mimeType, remoteUrl } = geminiImages[idx]
+        try {
+          let imageBlob: ArrayBuffer
+          if (base64Data) {
+            const bytes = base64ToUint8Array(base64Data.replace(/\s/g, ''))
+            imageBlob = bytes.buffer
+          } else if (remoteUrl) {
+            const remoteResp = await fetch(remoteUrl)
+            if (!remoteResp.ok) {
+              throw new Error(`下载远程图片失败: ${remoteResp.status} ${remoteResp.statusText}`)
+            }
+            const arrayBuffer = await remoteResp.arrayBuffer()
+            imageBlob = arrayBuffer
+          } else {
+            continue
+          }
+
+          const timestamp = Date.now()
+          const randomId = Math.random().toString(36).substring(7)
+          const extension = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1] || 'png'
+          const filename = `${user.id}/${timestamp}_${randomId}_gemini_${idx}.${extension}`
+          const storagePath = filename
+
+          const { error: uploadError } = await supabase.storage
+            .from('generated-images')
+            .upload(storagePath, imageBlob, {
+              contentType: mimeType,
+              upsert: false,
+            })
+
+          if (uploadError) {
+            console.error('上传失败:', uploadError)
+            throw new Error(`图片上传失败: ${uploadError.message}`)
+          }
+
+          const { data: urlData } = supabase.storage
+            .from('generated-images')
+            .getPublicUrl(storagePath)
+
+          imageUrls.push(urlData.publicUrl)
+          storagePaths.push(storagePath)
+          console.log('图片上传成功 (Gemini 原生):', urlData.publicUrl)
+        } catch (error) {
+          console.error('Gemini 原生图片处理异常:', error)
         }
       }
     }

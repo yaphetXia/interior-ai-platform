@@ -8,6 +8,7 @@ import MaskEditor from '@/components/MaskEditor'
 import { generateImage } from '@/services/imageGenerator'
 import { useAuth } from '@/contexts/AuthContext'
 import {
+  buildGeneralPrompt,
   buildPromptWithNanoBanana,
   needsExpansion,
   buildWhiteModelPrompt,
@@ -46,6 +47,7 @@ export default function WorkspacePage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [generatedImages, setGeneratedImages] = useState([])
+  const [isUploadDragging, setIsUploadDragging] = useState(false)
   const progressTimerRef = useRef(null)
 
   const startProgress = useCallback(() => {
@@ -105,8 +107,9 @@ export default function WorkspacePage() {
   const maskEditorKey = currentImage?.id ?? 'mask-editor-empty'
 
   // 处理多图上传
-  const handleImagesUpload = (e) => {
-    const files = Array.from(e.target.files)
+  const processUploadedFiles = useCallback((fileList) => {
+    if (!fileList || fileList.length === 0) return
+    const files = Array.from(fileList)
 
     // 获取当前预设的最大图片限制
     const maxImages = currentPreset?.maxImages || 10
@@ -141,7 +144,36 @@ export default function WorkspacePage() {
       }
       reader.readAsDataURL(file)
     })
-  }
+  }, [currentPreset, uploadedImages])
+
+  const handleImagesUpload = useCallback((e) => {
+    processUploadedFiles(e.target.files)
+    e.target.value = ''
+  }, [processUploadedFiles])
+
+  const handleUploadDragOver = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsUploadDragging(true)
+  }, [])
+
+  const handleUploadDragLeave = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.currentTarget.contains(e.relatedTarget)) {
+      return
+    }
+    setIsUploadDragging(false)
+  }, [])
+
+  const handleUploadDrop = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsUploadDragging(false)
+    if (e.dataTransfer?.files?.length) {
+      processUploadedFiles(e.dataTransfer.files)
+    }
+  }, [processUploadedFiles])
 
   // 删除图片
   const removeImage = (index) => {
@@ -180,10 +212,24 @@ export default function WorkspacePage() {
       // 处理提示词 - 根据预设使用不同的框架
       let finalPrompt = description
 
-      // 家具替换模式：使用 NanoBanana Framework
-      if (selectedPreset === 'furniture' && needsExpansion(description)) {
+      // 通用模式：使用 General Prompt Framework
+      if (selectedPreset === 'general' && needsExpansion(description)) {
         try {
-          finalPrompt = buildPromptWithNanoBanana(description, uploadedImages.length)
+          finalPrompt = await buildGeneralPrompt(description, uploadedImages.length)
+          if (import.meta.env.DEV) {
+            console.log('原始输入:', description)
+            console.log('使用 General Prompt Framework')
+            console.log('提示词长度:', finalPrompt.length, '字符')
+          }
+        } catch (error) {
+          console.error('构建提示失败，使用原始输入:', error)
+          finalPrompt = description
+        }
+      }
+      // 家具替换模式：使用 NanoBanana Framework
+      else if (selectedPreset === 'furniture' && needsExpansion(description)) {
+        try {
+          finalPrompt = await buildPromptWithNanoBanana(description, uploadedImages.length)
           if (import.meta.env.DEV) {
             console.log('原始输入:', description)
             console.log('使用 NanoBanana Framework (家具替换)')
@@ -197,7 +243,7 @@ export default function WorkspacePage() {
       // 白膜出图模式：使用 White Model Framework（可选启用）
       else if (selectedPreset === 'white_model' && needsExpansion(description)) {
         try {
-          finalPrompt = buildWhiteModelPrompt(description, uploadedImages.length)
+          finalPrompt = await buildWhiteModelPrompt(description, uploadedImages.length)
           if (import.meta.env.DEV) {
             console.log('原始输入:', description)
             console.log('使用 White Model Framework')
@@ -211,7 +257,7 @@ export default function WorkspacePage() {
       // 质感提升模式：使用 Texture Enhancement Framework（可选启用）
       else if (selectedPreset === 'sketch' && needsExpansion(description)) {
         try {
-          finalPrompt = buildTextureEnhancePrompt(description, uploadedImages.length)
+          finalPrompt = await buildTextureEnhancePrompt(description, uploadedImages.length)
           if (import.meta.env.DEV) {
             console.log('原始输入:', description)
             console.log('使用 Texture Enhancement Framework')
@@ -225,7 +271,7 @@ export default function WorkspacePage() {
       // 排版转效果图模式：使用 Layout Framework（可选启用）
       else if (selectedPreset === 'layout' && needsExpansion(description)) {
         try {
-          finalPrompt = buildLayoutPrompt(description, uploadedImages.length)
+          finalPrompt = await buildLayoutPrompt(description, uploadedImages.length)
           if (import.meta.env.DEV) {
             console.log('原始输入:', description)
             console.log('使用 Layout Framework')
@@ -239,7 +285,7 @@ export default function WorkspacePage() {
       // 局部调整模式：使用 Local Edit Framework（可选启用）
       else if (selectedPreset === 'local' && needsExpansion(description)) {
         try {
-          finalPrompt = buildLocalEditPrompt(description, uploadedImages.length)
+          finalPrompt = await buildLocalEditPrompt(description, uploadedImages.length)
           if (import.meta.env.DEV) {
             console.log('原始输入:', description)
             console.log('使用 Local Edit Framework')
@@ -420,7 +466,16 @@ export default function WorkspacePage() {
                   {/* 上传按钮 */}
                   <div className="mb-4">
                     <label className="block">
-                      <div className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary transition-colors">
+                      <div
+                        className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                          isUploadDragging
+                            ? 'border-primary bg-primary/5'
+                            : 'border-border hover:border-primary hover:bg-accent/5'
+                        }`}
+                        onDragOver={handleUploadDragOver}
+                        onDragLeave={handleUploadDragLeave}
+                        onDrop={handleUploadDrop}
+                      >
                         <Upload className="w-12 h-12 mx-auto mb-3 text-muted-foreground" />
                         <p className="text-sm font-medium mb-1">点击上传或拖拽图片</p>
                         <p className="text-xs text-muted-foreground">

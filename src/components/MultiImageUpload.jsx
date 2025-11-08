@@ -4,9 +4,12 @@ import { Upload, X, Image as ImageIcon } from 'lucide-react'
 
 export default function MultiImageUpload({ maxImages = 10, onImagesChange }) {
   const [images, setImages] = useState([])
+  const [isDragging, setIsDragging] = useState(false)
 
-  const handleFileSelect = useCallback((e) => {
-    const files = Array.from(e.target.files)
+  const processFiles = useCallback((fileList) => {
+    if (!fileList || fileList.length === 0) return
+
+    const files = Array.from(fileList)
     const remainingSlots = maxImages - images.length
     
     if (files.length > remainingSlots) {
@@ -50,6 +53,38 @@ export default function MultiImageUpload({ maxImages = 10, onImagesChange }) {
     })
   }, [images, maxImages, onImagesChange])
 
+  const handleFileSelect = useCallback((e) => {
+    processFiles(e.target.files)
+    // 重置 input 以便可重复上传同一文件
+    e.target.value = ''
+  }, [processFiles])
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragging) {
+      setIsDragging(true)
+    }
+  }, [isDragging])
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.currentTarget.contains(e.relatedTarget)) {
+      return
+    }
+    setIsDragging(false)
+  }, [])
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    if (e.dataTransfer?.files?.length) {
+      processFiles(e.dataTransfer.files)
+    }
+  }, [processFiles])
+
   const removeImage = useCallback((id) => {
     const updatedImages = images.filter(img => img.id !== id)
     setImages(updatedImages)
@@ -77,7 +112,16 @@ export default function MultiImageUpload({ maxImages = 10, onImagesChange }) {
             onChange={handleFileSelect}
             className="hidden"
           />
-          <div className="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-primary/50 hover:bg-accent/5 transition-all cursor-pointer">
+          <div
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer ${
+              isDragging
+                ? 'border-primary bg-primary/5'
+                : 'border-border hover:border-primary/50 hover:bg-accent/5'
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground" />
             <p className="text-foreground mb-1">拖拽图像到此处，或点击上传</p>
             <p className="text-sm text-muted-foreground">
@@ -144,4 +188,3 @@ export default function MultiImageUpload({ maxImages = 10, onImagesChange }) {
     </div>
   )
 }
-
